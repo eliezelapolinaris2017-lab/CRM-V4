@@ -1,16 +1,9 @@
-Oasis CRM Pro V4.1
+Oasis CRM Pro V4.2
 
-Cambios:
-- Corrige la próxima visita en tarjetas de clientes.
-- La próxima visita ahora sale de la última visita editada/registrada con fecha válida.
-- Evita que visitas viejas se queden dominando la tarjeta.
-- Seguimientos usan próxima visita real antes de marcar mantenimiento vencido.
-- Historial muestra columna Próxima.
-- Menos texto visual.
+Correcciones:
+- Seguimientos separan mantenimiento, diagnóstico, cotización y cobro.
+- WhatsApp de diagnóstico ya no usa mensaje de mantenimiento.
+- Borrado protegido con tombstones para que Firebase no resucite clientes o visitas eliminadas.
+- Sync ejecuta eliminación remota antes de traer datos.
 
-Subir a GitHub Pages:
-index.html
-styles.css
-app.js
-logo.png
-CNAME
+Sube todos los archivos al repo. El logo debe llamarse logo.png.
