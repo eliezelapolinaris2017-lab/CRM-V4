@@ -47,6 +47,31 @@ const isoNow = () => new Date().toISOString();
 const daysBetween = (a, b = todayISO()) => Math.floor((new Date(b) - new Date(a)) / 86400000);
 const addDaysISO = (date, days) => { const d = new Date(date || todayISO()); d.setDate(d.getDate() + days); return d.toISOString().slice(0,10); };
 
+function stampToMillis(v){
+  if(!v) return 0;
+  if(typeof v === "number") return v;
+  if(typeof v === "string"){
+    const t = Date.parse(v);
+    return Number.isNaN(t) ? 0 : t;
+  }
+  if(typeof v?.toDate === "function"){
+    const t = v.toDate().getTime();
+    return Number.isNaN(t) ? 0 : t;
+  }
+  if(typeof v?.seconds === "number") return (v.seconds * 1000) + Math.floor((v.nanoseconds || 0) / 1000000);
+  const t = Date.parse(String(v));
+  return Number.isNaN(t) ? 0 : t;
+}
+function stampToISO(v){
+  const ms = stampToMillis(v);
+  return ms ? new Date(ms).toISOString() : isoNow();
+}
+function isRemoteNewer(remote, local){
+  const rt = stampToMillis(remote?.updatedAt || remote?.createdAt);
+  const lt = stampToMillis(local?.updatedAt || local?.createdAt);
+  return rt > lt;
+}
+
 function escapeHtml(s){return String(s||"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");}
 
 function getDeletedMap(){try{return JSON.parse(localStorage.getItem(DELETED_KEY)||"{}");}catch(e){return {};}}
@@ -172,8 +197,8 @@ function normalizeDB(db){
     status: ["Prospecto","Activo","VIP","Pausado"].includes(c.status) ? c.status : "Prospecto",
     tags: Array.isArray(c.tags) ? c.tags.map(x=>String(x).trim()).filter(Boolean) : String(c.tags||"").split(",").map(x=>x.trim()).filter(Boolean),
     note: String(c.note || "").trim(),
-    createdAt: c.createdAt || now,
-    updatedAt: c.updatedAt || c.createdAt || now
+    createdAt: stampToISO(c.createdAt || now),
+    updatedAt: stampToISO(c.updatedAt || c.createdAt || now)
   }));
   const clientIds = new Set(db.clients.map(c=>c.id));
   db.visits = db.visits.map(v=>({
@@ -191,8 +216,8 @@ function normalizeDB(db){
     nextDate: isValidISODate(v.nextDate) ? v.nextDate : inferNextDate({ ...v, type: normalizeVisitType(v.type || guessType(v.service)) }),
     followedUp: v.followedUp === true || v.followedUp === "yes" ? "yes" : "no",
     note: String(v.note || "").trim(),
-    createdAt: v.createdAt || now,
-    updatedAt: v.updatedAt || v.createdAt || now
+    createdAt: stampToISO(v.createdAt || now),
+    updatedAt: stampToISO(v.updatedAt || v.createdAt || now)
   })).filter(v=>clientIds.has(v.clientId));
   return db;
 }
@@ -461,9 +486,9 @@ async function deleteRemoteTombstones(){
   Object.keys(del.visits||{}).forEach(id=>ops.push(visitCol(uidVal).doc(id)));
   for(let i=0;i<ops.length;i+=450){const batch=fbDB.batch(); ops.slice(i,i+450).forEach(ref=>batch.delete(ref)); await batch.commit();}
 }
-async function pullFirebaseToLocal(){const user=fbUser(); if(!user||!requireOwner(user))throw new Error("Cuenta no autorizada."); const uidVal=user.uid; await pullVisitCatalogFromFirebase(uidVal); const [cs,vs]=await Promise.all([clientCol(uidVal).get(),visitCol(uidVal).get()]); const remote=normalizeDB({clients:cs.docs.map(d=>d.data()).filter(Boolean).filter(d=>!isDeleted("clients",d.id)),visits:vs.docs.map(d=>d.data()).filter(Boolean).filter(d=>!isDeleted("visits",d.id)&&!isDeleted("clients",d.clientId))}); const localClients=new Map(state.db.clients.filter(c=>!isDeleted("clients",c.id)).map(c=>[c.id,c])); const localVisits=new Map(state.db.visits.filter(v=>!isDeleted("visits",v.id)&&!isDeleted("clients",v.clientId)).map(v=>[v.id,v])); remote.clients.forEach(r=>{const l=localClients.get(r.id); if(!l||String(r.updatedAt||r.createdAt)>String(l.updatedAt||l.createdAt))localClients.set(r.id,r);}); remote.visits.forEach(r=>{const l=localVisits.get(r.id); if(!l||String(r.updatedAt||r.createdAt)>String(l.updatedAt||l.createdAt))localVisits.set(r.id,r);}); state.db=normalizeDB({clients:[...localClients.values()],visits:[...localVisits.values()]}); await idbClearAll(); await persistState();}
+async function pullFirebaseToLocal(){const user=fbUser(); if(!user||!requireOwner(user))throw new Error("Cuenta no autorizada."); const uidVal=user.uid; await pullVisitCatalogFromFirebase(uidVal); const [cs,vs]=await Promise.all([clientCol(uidVal).get(),visitCol(uidVal).get()]); const remote=normalizeDB({clients:cs.docs.map(d=>d.data()).filter(Boolean).filter(d=>!isDeleted("clients",d.id)),visits:vs.docs.map(d=>d.data()).filter(Boolean).filter(d=>!isDeleted("visits",d.id)&&!isDeleted("clients",d.clientId))}); const localClients=new Map(state.db.clients.filter(c=>!isDeleted("clients",c.id)).map(c=>[c.id,c])); const localVisits=new Map(state.db.visits.filter(v=>!isDeleted("visits",v.id)&&!isDeleted("clients",v.clientId)).map(v=>[v.id,v])); remote.clients.forEach(r=>{const l=localClients.get(r.id); if(!l||isRemoteNewer(r,l))localClients.set(r.id,r);}); remote.visits.forEach(r=>{const l=localVisits.get(r.id); if(!l||isRemoteNewer(r,l))localVisits.set(r.id,r);}); state.db=normalizeDB({clients:[...localClients.values()],visits:[...localVisits.values()]}); await idbClearAll(); await persistState();}
 async function pushLocalToFirebase(){const user=fbUser(); if(!user||!requireOwner(user))throw new Error("Cuenta no autorizada."); const uidVal=user.uid; await metaRef(uidVal).set({lastPingAt:isoNow(),app:"oasis_crm_pro_v4_5",visitCatalog:normalizeVisitCatalog(state.visitCatalog||defaultVisitCatalog())},{merge:true}); const ops=[]; state.db.clients.filter(c=>!isDeleted("clients",c.id)).forEach(c=>ops.push({ref:clientCol(uidVal).doc(c.id),doc:c})); state.db.visits.filter(v=>!isDeleted("visits",v.id)&&!isDeleted("clients",v.clientId)).forEach(v=>ops.push({ref:visitCol(uidVal).doc(v.id),doc:v})); for(let i=0;i<ops.length;i+=450){const batch=fbDB.batch(); ops.slice(i,i+450).forEach(item=>batch.set(item.ref,item.doc,{merge:true})); await batch.commit();}}
-async function safeSyncNow(reason="manual"){if(!canAutoSync())return; if(_syncRunning){_syncPending=true;return;} _syncRunning=true;_syncPending=false; try{fbStatus(`sync ${reason}...`); await deleteRemoteTombstones(); await pullFirebaseToLocal(); await pushLocalToFirebase(); refreshAll(); const user=fbUser(); fbStatus(user?`online (${user.email})`:"offline");}catch(e){console.error(e);const user=fbUser();fbStatus(user?`online (${user.email})`:"offline");}finally{_syncRunning=false;if(_syncPending)setTimeout(()=>safeSyncNow("pending"),400);}}
+async function safeSyncNow(reason="manual"){if(!canAutoSync())return; if(_syncRunning){_syncPending=true;return;} _syncRunning=true;_syncPending=false; try{fbStatus(`sync ${reason}...`); await deleteRemoteTombstones(); const localFirst=/local-change|save|edit|delete/i.test(String(reason||"")); if(localFirst){ await pushLocalToFirebase(); await pullFirebaseToLocal(); } else { await pullFirebaseToLocal(); await pushLocalToFirebase(); } refreshAll(); const user=fbUser(); fbStatus(user?`online (${user.email})`:"offline");}catch(e){console.error(e);const user=fbUser();fbStatus(user?`online (${user.email})`:"offline");}finally{_syncRunning=false;if(_syncPending)setTimeout(()=>safeSyncNow("pending"),400);}}
 function startAutoSyncLoop(){stopAutoSyncLoop(); if(AUTO_SYNC_ENABLED)_syncTimer=setInterval(()=>safeSyncNow("interval"),AUTO_SYNC_INTERVAL_MS);} function stopAutoSyncLoop(){if(_syncTimer)clearInterval(_syncTimer);_syncTimer=null;} function scheduleDebouncedSync(reason="local-change"){if(!canAutoSync())return;clearTimeout(_syncDebounce);_syncDebounce=setTimeout(()=>safeSyncNow(reason),AUTO_SYNC_DEBOUNCE_MS);} async function fbLogin(){if(!fbReady())return alert("Firebase no está listo.");const provider=new firebase.auth.GoogleAuthProvider();if(isIOS())return fbAuth.signInWithRedirect(provider);const res=await fbAuth.signInWithPopup(provider);if(!requireOwner(res.user)){await fbAuth.signOut();throw new Error("Cuenta no autorizada.");}} async function fbHandleRedirectResult(){if(!fbReady())return;try{const res=await fbAuth.getRedirectResult();if(res?.user&&!requireOwner(res.user)){await fbAuth.signOut();throw new Error("Cuenta no autorizada.");}}catch(e){const msg=String(e?.message||"").toLowerCase();if(msg&&!msg.includes("redirect")&&!msg.includes("no redirect"))alert("Login redirect falló: "+(e?.message||e));}} async function fbLogout(){if(fbReady())await fbAuth.signOut();} async function exitCRM(){try{clearSessionUnlock();if(fbReady()&&fbUser())await fbAuth.signOut();}catch(e){console.error(e);}finally{window.location.href=HUB_URL;}}
 
 function bindUI(){document.querySelectorAll(".navBtn").forEach(btn=>btn.addEventListener("click",()=>setView(btn.dataset.view)));$("globalSearch")?.addEventListener("input",refreshAll);$("clientSearch")?.addEventListener("input",renderClients);$("clientStatusFilter")?.addEventListener("change",renderClients);$("clientSort")?.addEventListener("change",renderClients);$("followupFilter")?.addEventListener("change",renderFollowups);$("visitSearch")?.addEventListener("input",renderVisits);$("timelineSearch")?.addEventListener("input",()=>{state.timelineLimit=100;renderTimeline();});$("timelineFrom")?.addEventListener("change",()=>{state.timelineLimit=100;renderTimeline();});$("timelineTo")?.addEventListener("change",()=>{state.timelineLimit=100;renderTimeline();});$("btnClearTimelineFilters")?.addEventListener("click",()=>{$("timelineSearch").value="";$("timelineFrom").value="";$("timelineTo").value="";state.timelineLimit=100;renderTimeline();});$("btnMoreTimeline")?.addEventListener("click",()=>{state.timelineLimit+=100;renderTimeline();});$("btnNewClient")?.addEventListener("click",openClientModal);$("btnCloseModal")?.addEventListener("click",closeClientModal);$("btnCreateClient")?.addEventListener("click",createClient);$("btnOpenQuickVisit")?.addEventListener("click",()=>openVisitModal(null));$("btnAddVisit")?.addEventListener("click",()=>openVisitModal(null,state.activeClientId));$("btnCloseVisitModal")?.addEventListener("click",closeVisitModal);$("btnSaveVisit")?.addEventListener("click",saveVisit);$("btnCloseProfile")?.addEventListener("click",closeProfile);$("btnSaveClient")?.addEventListener("click",saveClientEdits);$("btnDeleteClient")?.addEventListener("click",()=>deleteClient(state.activeClientId));$("btnExportBackup")?.addEventListener("click",exportJSONBackup);$("btnRestoreBackup")?.addEventListener("click",()=>$("restoreBackupFile").click());$("restoreBackupFile")?.addEventListener("change",e=>{if(e.target.files?.[0])restoreBackup(e.target.files[0]);e.target.value="";});$("btnMigrateLegacy")?.addEventListener("click",async()=>{const ok=await importLegacyIfNeeded(true);alert(ok?"Legacy migrado ✅":"No encontré data legacy.");refreshAll();});$("btnResetAll")?.addEventListener("click",resetAll);$("btnSaveVisitCatalog")?.addEventListener("click",saveVisitCatalogFromSettings);$("btnChangePin")?.addEventListener("click",()=>showLock("change"));$("btnExitCRM")?.addEventListener("click",exitCRM);$("btnLogin")?.addEventListener("click",()=>fbLogin().catch(e=>alert(e.message||e)));$("btnLogout")?.addEventListener("click",fbLogout);$("btnSyncNow")?.addEventListener("click",()=>safeSyncNow("manual"));$("btnExportTimeline")?.addEventListener("click",()=>exportCSV("timeline_oasis", [["Fecha","Cliente","Servicio","Tipo","Equipo","Próxima","Pago","Monto","Nota"],...timelineRows().map(({visit,client})=>[visit.date,client.name,visit.service,visit.type,[visit.equipment,visit.model].filter(Boolean).join(" "),visit.nextDate,visit.paymentStatus,visit.amount,visit.note])]));$("btnExportFollowups")?.addEventListener("click",()=>exportCSV("seguimientos_oasis", [["Prioridad","Cliente","Contacto","Última","Motivo","Acción"],...getFollowups().map(f=>[f.priority,f.client.name,f.client.contact,f.lastDate,f.reason,f.action])]));}
