@@ -1,9 +1,14 @@
-Oasis CRM Pro V4.4
+Oasis CRM Pro V4.5
 
-Corrección de Seguimientos:
-- Una gestión vieja no domina si existe una visita más nueva.
-- Diagnóstico, cotización, cobro, VIP y mantenimiento se calculan por estado operacional.
-- Mantenimiento vencido solo aparece si no hay actividad posterior que lo supere.
-- Cobros pendientes se mantienen como gestión financiera hasta pagarse.
+Cambios:
+- Tarjetas de visitas con dropdown para Servicio, Equipo / Marca, BTU / Modelo y Técnico.
+- Nueva sección Config > Categorías de visitas.
+- Las categorías se guardan localmente y se sincronizan con Firebase en meta/items/state.
+- Mantiene compatibilidad con la data existente de V4.4.
 
-Subir a GitHub Pages: index.html, styles.css, app.js, logo.png y CNAME.
+Subir a GitHub Pages:
+index.html
+styles.css
+app.js
+logo.png
+CNAME
