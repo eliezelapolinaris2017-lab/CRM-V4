@@ -1,8 +1,9 @@
-Oasis CRM Pro V4.5.1
+Oasis CRM Pro V4.5.2
 
-Corrección:
-- Al editar una tarjeta de visita, el cambio local se sube primero a Firebase antes de volver a traer data.
-- Se evita que una versión vieja de la nube reemplace la visita editada.
-- Se normalizan fechas updatedAt/createdAt para comparar correctamente entre local y Firebase.
+Corrección fuerte de edición/sync:
+- Las visitas editadas quedan marcadas como cambio local pendiente.
+- Firebase ya no puede sobrescribir una tarjeta recién editada con data vieja.
+- La sincronización empuja cambios locales primero cuando detecta ediciones.
+- Mantiene dropdowns de Servicio, Equipo/Marca, BTU/Modelo y Técnico.
 
 Subir a GitHub Pages: index.html, styles.css, app.js, logo.png y CNAME.
