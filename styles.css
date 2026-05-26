@@ -164,3 +164,6 @@ img{max-width:100%;display:block}
 .actionLink{color:var(--gold);text-decoration:none;font-weight:900}
 .actionLink:hover{text-decoration:underline}
 @media(max-width:920px){.grid3{grid-template-columns:1fr}.whatsGrid{grid-template-columns:1fr}.quickSearch{min-width:0;width:100%}.topActions{width:100%}.topActions .btn{flex:1}.toolbarRow{grid-template-columns:1fr}.table{min-width:980px}}
+
+.categoryText{height:auto;min-height:170px;padding-top:14px;line-height:1.45;resize:vertical}
+.formGrid textarea.input{height:auto}

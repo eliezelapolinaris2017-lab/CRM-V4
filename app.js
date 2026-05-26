@@ -20,8 +20,9 @@ const AUTO_SYNC_ENABLED = true;
 const AUTO_SYNC_INTERVAL_MS = 3 * 60 * 1000;
 const AUTO_SYNC_DEBOUNCE_MS = 1200;
 const FOLLOWUP_DAYS = 90;
-const APP_VERSION = "V4.4";
+const APP_VERSION = "V4.5";
 const DELETED_KEY = "oasis_crm_deleted_v1";
+const VISIT_CATALOG_KEY = "oasis_crm_visit_catalog_v1";
 
 let fbApp = null, fbAuth = null, fbDB = null;
 let _syncTimer = null, _syncDebounce = null, _syncRunning = false, _syncPending = false;
@@ -34,7 +35,8 @@ const state = {
   pinMode: "unlock",
   timelineLimit: 100,
   db: { clients: [], visits: [] },
-  indexes: null
+  indexes: null,
+  visitCatalog: null
 };
 
 const $ = (id) => document.getElementById(id);
@@ -54,6 +56,102 @@ function isDeleted(store,id){const map=getDeletedMap(); return !!(map?.[store]?.
 function markClientDeletedWithVisits(clientId){markDeleted("clients",clientId); state.db.visits.filter(v=>v.clientId===clientId).forEach(v=>markDeleted("visits",v.id));}
 function setText(id,text){const el=$(id); if(el) el.textContent=text;}
 function safeVal(id){return $(id)?.value || "";}
+
+function defaultVisitCatalog(){
+  return {
+    services:[
+      "Mantenimiento preventivo",
+      "Mantenimiento profundo",
+      "Diagnóstico técnico",
+      "Reparación",
+      "Instalación",
+      "Cotización",
+      "Lavado de evaporador",
+      "Limpieza de drenaje",
+      "Reemplazo de capacitor",
+      "Carga / verificación de refrigerante"
+    ],
+    equipment:["Midea","AirMax","Gree","TGM","Fujitsu","Daikin","Carrier","LG","Samsung","York","Mini split","PTAC","Aire de ventana","Manejadora de ductos"],
+    models:["9K BTU","12K BTU","18K BTU","24K BTU","30K BTU","36K BTU","42K BTU","48K BTU","60K BTU","Inverter","R32","R410A"],
+    technicians:["Eliezel","Oasis Técnico","Técnico 1","Técnico 2"]
+  };
+}
+function cleanList(arr){
+  const seen=new Set();
+  return (Array.isArray(arr)?arr:String(arr||"").split("\n"))
+    .map(x=>String(x||"").trim())
+    .filter(Boolean)
+    .filter(x=>{const k=x.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true;});
+}
+function normalizeVisitCatalog(cat){
+  const base=defaultVisitCatalog();
+  return {
+    services:cleanList(cat?.services?.length?cat.services:base.services),
+    equipment:cleanList(cat?.equipment?.length?cat.equipment:base.equipment),
+    models:cleanList(cat?.models?.length?cat.models:base.models),
+    technicians:cleanList(cat?.technicians?.length?cat.technicians:base.technicians)
+  };
+}
+function loadVisitCatalog(){
+  try{state.visitCatalog=normalizeVisitCatalog(JSON.parse(localStorage.getItem(VISIT_CATALOG_KEY)||"{}"));}
+  catch(e){state.visitCatalog=normalizeVisitCatalog(defaultVisitCatalog());}
+}
+function saveVisitCatalogLocal(cat=state.visitCatalog){
+  state.visitCatalog=normalizeVisitCatalog(cat);
+  localStorage.setItem(VISIT_CATALOG_KEY, JSON.stringify(state.visitCatalog));
+}
+function optionHtml(list, placeholder="Seleccionar"){
+  return `<option value="">${escapeHtml(placeholder)}</option>` + cleanList(list).map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join("");
+}
+function ensureSelectValue(selectId, value){
+  const el=$(selectId); if(!el)return;
+  const val=String(value||"").trim();
+  if(val && ![...el.options].some(o=>o.value===val)){
+    const opt=document.createElement("option"); opt.value=val; opt.textContent=val; el.appendChild(opt);
+  }
+  el.value=val;
+}
+function populateVisitDropdowns(){
+  const cat=normalizeVisitCatalog(state.visitCatalog||defaultVisitCatalog());
+  if($("vService")) $("vService").innerHTML=optionHtml(cat.services,"Servicio");
+  if($("vEquipment")) $("vEquipment").innerHTML=optionHtml(cat.equipment,"Equipo / Marca");
+  if($("vModel")) $("vModel").innerHTML=optionHtml(cat.models,"BTU / Modelo");
+  if($("vTechnician")) $("vTechnician").innerHTML=optionHtml(cat.technicians,"Técnico");
+}
+function renderVisitCatalogSettings(){
+  const cat=normalizeVisitCatalog(state.visitCatalog||defaultVisitCatalog());
+  if($("catServices")) $("catServices").value=cat.services.join("\n");
+  if($("catEquipment")) $("catEquipment").value=cat.equipment.join("\n");
+  if($("catModels")) $("catModels").value=cat.models.join("\n");
+  if($("catTechnicians")) $("catTechnicians").value=cat.technicians.join("\n");
+}
+function readVisitCatalogSettings(){
+  return normalizeVisitCatalog({
+    services: ($("catServices")?.value||"").split("\n"),
+    equipment: ($("catEquipment")?.value||"").split("\n"),
+    models: ($("catModels")?.value||"").split("\n"),
+    technicians: ($("catTechnicians")?.value||"").split("\n")
+  });
+}
+async function saveVisitCatalogFromSettings(){
+  saveVisitCatalogLocal(readVisitCatalogSettings());
+  populateVisitDropdowns();
+  renderVisitCatalogSettings();
+  if(canAutoSync()) await pushVisitCatalogToFirebase().catch(console.error);
+  alert("Categorías guardadas ✅");
+}
+async function pullVisitCatalogFromFirebase(uidVal){
+  if(!fbDB||!uidVal)return;
+  try{
+    const snap=await metaRef(uidVal).get();
+    const remote=snap.exists ? snap.data()?.visitCatalog : null;
+    if(remote){saveVisitCatalogLocal(remote); populateVisitDropdowns(); renderVisitCatalogSettings();}
+  }catch(e){console.error("catalog pull", e);}
+}
+async function pushVisitCatalogToFirebase(){
+  const user=fbUser(); if(!user||!requireOwner(user))return;
+  await metaRef(user.uid).set({visitCatalog: normalizeVisitCatalog(state.visitCatalog||defaultVisitCatalog()), visitCatalogUpdatedAt: isoNow()},{merge:true});
+}
 
 function openDB(){return new Promise((resolve,reject)=>{const r=indexedDB.open(IDB_NAME,IDB_VERSION);r.onupgradeneeded=()=>{const db=r.result;DB_STORES.forEach(s=>{if(!db.objectStoreNames.contains(s))db.createObjectStore(s,{keyPath:"id"});});};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
 async function idbGetAll(storeName){const db=await openDB();return new Promise((resolve,reject)=>{const tx=db.transaction(storeName,"readonly");const req=tx.objectStore(storeName).getAll();req.onsuccess=()=>resolve(req.result||[]);req.onerror=()=>reject(req.error);});}
@@ -302,7 +400,7 @@ function priorityPill(p){return `<span class="priority ${p}">${p==="high"?"Alta"
 function globalFilterTokens(){return (safeVal("globalSearch")||"").trim().toLowerCase();}
 function passesGlobal(client, visits=[]){const q=globalFilterTokens(); if(!q)return true; const hay=[client.name,client.contact,client.addr,client.note,(client.tags||[]).join(" "),...visits.flatMap(v=>[v.service,v.note,v.type,v.paymentStatus,v.equipment,v.model,v.technician,String(v.amount),v.date])].join(" ").toLowerCase(); return hay.includes(q);}
 
-function setView(view){state.activeView=view;document.querySelectorAll(".view").forEach(el=>el.classList.remove("is-active"));document.querySelectorAll(".navBtn").forEach(el=>el.classList.remove("is-active"));$(`view-${view}`)?.classList.add("is-active");document.querySelector(`.navBtn[data-view="${view}"]`)?.classList.add("is-active");const names={dashboard:"Dashboard",clients:"Clientes",followups:"Seguimientos",timeline:"Timeline",reporting:"Reporte",settings:"Config"};setText("pageTitle",names[view]||"Oasis CRM Pro");refreshAll();}
+function setView(view){state.activeView=view;document.querySelectorAll(".view").forEach(el=>el.classList.remove("is-active"));document.querySelectorAll(".navBtn").forEach(el=>el.classList.remove("is-active"));$(`view-${view}`)?.classList.add("is-active");document.querySelector(`.navBtn[data-view="${view}"]`)?.classList.add("is-active");const names={dashboard:"Dashboard",clients:"Clientes",followups:"Seguimientos",timeline:"Timeline",reporting:"Reporte",settings:"Config"};setText("pageTitle",names[view]||"Oasis CRM Pro");if(view==="settings")renderVisitCatalogSettings();refreshAll();}
 function renderDashboard(){const clients=state.db.clients, visits=state.db.visits, followups=getFollowups(); const active=clients.filter(c=>c.status==="Activo"||c.status==="VIP").length; const revenue=visits.reduce((a,v)=>a+Number(v.amount||0),0); const pending=visits.filter(v=>["Pendiente","Parcial"].includes(v.paymentStatus)).reduce((a,v)=>a+Number(v.amount||0),0); setText("kpiClients",clients.length); setText("kpiActiveClients",`${active} activos`); setText("kpiRevenue",money(revenue)); setText("kpiVisits",`${visits.length} visitas`); setText("kpiDue",followups.filter(f=>f.kind==="due").length); setText("kpiPending",money(pending)); const recent=[...visits].sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,8); setText("recentCountChip",`${recent.length} registros`); const body=$("recentActivityBody"); body.innerHTML=recent.length?"":`<tr><td colspan="5" class="muted">Sin actividad.</td></tr>`; recent.forEach(v=>{const c=state.indexes.clientsById.get(v.clientId); const tr=document.createElement("tr"); tr.innerHTML=`<td>${escapeHtml(v.date)}</td><td><strong>${escapeHtml(c?.name||"—")}</strong></td><td>${escapeHtml(v.service)}<span class="mutedLine">${escapeHtml(v.type)}</span></td><td>${payBadge(v.paymentStatus)}</td><td><strong>${money(v.amount)}</strong></td>`; body.appendChild(tr);}); const list=$("quickActionsList"); const top=followups.slice(0,7); list.innerHTML=top.length?"":`<div class="listItem"><div><strong>Sin pendientes</strong><small>Todo al día.</small></div></div>`; top.forEach(f=>{const div=document.createElement("div"); div.className="listItem"; div.innerHTML=`<div><strong>${escapeHtml(f.client.name)}</strong><small>${escapeHtml(f.reason)}</small></div>${priorityPill(f.priority)}`; list.appendChild(div);});}
 function renderClients(){const q=safeVal("clientSearch").trim().toLowerCase(), status=safeVal("clientStatusFilter")||"all", sort=safeVal("clientSort")||"updated"; let rows=state.db.clients.map(client=>({client,stats:clientTotals(client.id),visits:state.indexes.visitsByClient.get(client.id)||[]})).filter(({client,visits})=>passesGlobal(client,visits)).filter(({client})=>!q||[client.name,client.contact,client.addr,client.note,(client.tags||[]).join(" ")].join(" ").toLowerCase().includes(q)).filter(({client})=>status==="all"||client.status===status); const dueIds=new Set(getFollowups().filter(f=>f.kind==="due"||f.kind==="payment").map(f=>f.client.id)); rows.sort((a,b)=>{if(sort==="name")return a.client.name.localeCompare(b.client.name); if(sort==="revenue")return b.stats.total-a.stats.total; if(sort==="last")return String(b.stats.last||"").localeCompare(String(a.stats.last||"")); if(sort==="due")return Number(dueIds.has(b.client.id))-Number(dueIds.has(a.client.id)); return String(b.client.updatedAt).localeCompare(String(a.client.updatedAt));}); setText("clientsCountChip",`${rows.length} clientes`); const body=$("clientsBody"); body.innerHTML=rows.length?"":`<tr><td colspan="6" class="muted">No hay resultados.</td></tr>`; rows.forEach(({client,stats})=>{const tr=document.createElement("tr"); tr.innerHTML=`<td><strong>${escapeHtml(client.name)}</strong><span class="mutedLine">${escapeHtml((client.tags||[]).join(", ")||"Sin tags")}</span></td><td>${badge(client.status)}</td><td>${escapeHtml(client.contact||"—")}</td><td>${escapeHtml(stats.last||"—")}</td><td><strong>${money(stats.total)}</strong></td><td><div class="aBtns"><button class="aBtn" data-open="${client.id}" type="button">Abrir</button><button class="aBtn danger" data-del="${client.id}" type="button">Borrar</button></div></td>`; body.appendChild(tr);}); body.querySelectorAll("[data-open]").forEach(btn=>btn.addEventListener("click",()=>openProfile(btn.dataset.open))); body.querySelectorAll("[data-del]").forEach(btn=>btn.addEventListener("click",()=>deleteClient(btn.dataset.del)));}
 function openProfile(clientId){const client=state.indexes.clientsById.get(clientId); if(!client)return; state.activeClientId=clientId; $("emptyProfileState")?.classList.add("hidden"); $("clientProfile")?.classList.remove("hidden"); const stats=clientTotals(clientId); setText("pName",client.name); setText("profileSub",client.contact||client.addr||"Sin contacto"); setText("pLastVisit",stats.last||"—"); setText("pTotal",money(stats.total)); setText("pNextDue",stats.next||"—"); $("pNameInput").value=client.name||""; $("pContactInput").value=client.contact||""; $("pAddrInput").value=client.addr||""; $("pStatusInput").value=client.status||"Prospecto"; $("pTagsInput").value=(client.tags||[]).join(", "); $("pNoteInput").value=client.note||""; renderWhatsappActions(client); populateVisitClientSelect(clientId); renderVisits();}
@@ -337,7 +435,7 @@ function refreshAll(){renderDashboard();renderClients();renderFollowups();render
 function populateVisitClientSelect(selectedId=state.activeClientId){const select=$("vClient"); if(!select)return; const current=selectedId||select.value; select.innerHTML=state.db.clients.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(c=>`<option value="${c.id}">${escapeHtml(c.name)}</option>`).join(""); if(current&&state.indexes.clientsById.has(current))select.value=current;}
 function openClientModal(){["mName","mContact","mAddr","mTags","mNote"].forEach(id=>$(id).value="");$("mStatus").value="Prospecto";$("clientModal").style.display="flex";}
 function closeClientModal(){$("clientModal").style.display="none";}
-function openVisitModal(visitId=null,preferredClientId=state.activeClientId){state.editingVisitId=visitId; populateVisitClientSelect(preferredClientId); $("visitModal").style.display="flex"; setText("visitModalTitle",visitId?"Editar visita":"Nueva visita"); ["vService","vAmount","vEquipment","vModel","vTechnician","vNextDate","vNote"].forEach(id=>$(id).value=""); $("vDate").value=todayISO(); $("vType").value="Mantenimiento"; $("vPaymentStatus").value="Pagado"; $("vOutcome").value="Completado"; $("vFollowedUp").value="no"; if(visitId){const v=state.db.visits.find(x=>x.id===visitId); if(!v)return; $("vClient").value=v.clientId; $("vDate").value=v.date||todayISO(); $("vType").value=v.type||"Mantenimiento"; $("vService").value=v.service||""; $("vAmount").value=v.amount??0; $("vPaymentStatus").value=v.paymentStatus||"Pagado"; $("vEquipment").value=v.equipment||""; $("vModel").value=v.model||""; $("vTechnician").value=v.technician||""; $("vOutcome").value=v.outcome||"Completado"; $("vNextDate").value=v.nextDate||""; $("vFollowedUp").value=v.followedUp||"no"; $("vNote").value=v.note||"";}}
+function openVisitModal(visitId=null,preferredClientId=state.activeClientId){state.editingVisitId=visitId; populateVisitClientSelect(preferredClientId); populateVisitDropdowns(); $("visitModal").style.display="flex"; setText("visitModalTitle",visitId?"Editar visita":"Nueva visita"); ["vService","vAmount","vEquipment","vModel","vTechnician","vNextDate","vNote"].forEach(id=>$(id).value=""); $("vDate").value=todayISO(); $("vType").value="Mantenimiento"; $("vPaymentStatus").value="Pagado"; $("vOutcome").value="Completado"; $("vFollowedUp").value="no"; if(visitId){const v=state.db.visits.find(x=>x.id===visitId); if(!v)return; $("vClient").value=v.clientId; $("vDate").value=v.date||todayISO(); $("vType").value=v.type||"Mantenimiento"; ensureSelectValue("vService", v.service||""); $("vAmount").value=v.amount??0; $("vPaymentStatus").value=v.paymentStatus||"Pagado"; ensureSelectValue("vEquipment", v.equipment||""); ensureSelectValue("vModel", v.model||""); ensureSelectValue("vTechnician", v.technician||""); $("vOutcome").value=v.outcome||"Completado"; $("vNextDate").value=v.nextDate||""; $("vFollowedUp").value=v.followedUp||"no"; $("vNote").value=v.note||"";}}
 function closeVisitModal(){$("visitModal").style.display="none";state.editingVisitId=null;}
 async function createClient(){const name=safeVal("mName").trim(); if(!name)return alert("Nombre requerido."); const now=isoNow(); const client={id:uid("c"),name,contact:safeVal("mContact").trim(),addr:safeVal("mAddr").trim(),status:safeVal("mStatus")||"Prospecto",tags:safeVal("mTags").split(",").map(x=>x.trim()).filter(Boolean),note:safeVal("mNote").trim(),createdAt:now,updatedAt:now}; state.db.clients.unshift(client); await persistState(); closeClientModal(); refreshAll(); setView("clients"); openProfile(client.id);}
 async function saveClientEdits(){const c=state.db.clients.find(x=>x.id===state.activeClientId); if(!c)return; c.name=safeVal("pNameInput").trim()||c.name; c.contact=safeVal("pContactInput").trim(); c.addr=safeVal("pAddrInput").trim(); c.status=safeVal("pStatusInput")||"Prospecto"; c.tags=safeVal("pTagsInput").split(",").map(x=>x.trim()).filter(Boolean); c.note=safeVal("pNoteInput").trim(); c.updatedAt=isoNow(); await persistState(); refreshAll(); openProfile(c.id);}
@@ -363,12 +461,12 @@ async function deleteRemoteTombstones(){
   Object.keys(del.visits||{}).forEach(id=>ops.push(visitCol(uidVal).doc(id)));
   for(let i=0;i<ops.length;i+=450){const batch=fbDB.batch(); ops.slice(i,i+450).forEach(ref=>batch.delete(ref)); await batch.commit();}
 }
-async function pullFirebaseToLocal(){const user=fbUser(); if(!user||!requireOwner(user))throw new Error("Cuenta no autorizada."); const uidVal=user.uid; const [cs,vs]=await Promise.all([clientCol(uidVal).get(),visitCol(uidVal).get()]); const remote=normalizeDB({clients:cs.docs.map(d=>d.data()).filter(Boolean).filter(d=>!isDeleted("clients",d.id)),visits:vs.docs.map(d=>d.data()).filter(Boolean).filter(d=>!isDeleted("visits",d.id)&&!isDeleted("clients",d.clientId))}); const localClients=new Map(state.db.clients.filter(c=>!isDeleted("clients",c.id)).map(c=>[c.id,c])); const localVisits=new Map(state.db.visits.filter(v=>!isDeleted("visits",v.id)&&!isDeleted("clients",v.clientId)).map(v=>[v.id,v])); remote.clients.forEach(r=>{const l=localClients.get(r.id); if(!l||String(r.updatedAt||r.createdAt)>String(l.updatedAt||l.createdAt))localClients.set(r.id,r);}); remote.visits.forEach(r=>{const l=localVisits.get(r.id); if(!l||String(r.updatedAt||r.createdAt)>String(l.updatedAt||l.createdAt))localVisits.set(r.id,r);}); state.db=normalizeDB({clients:[...localClients.values()],visits:[...localVisits.values()]}); await idbClearAll(); await persistState();}
-async function pushLocalToFirebase(){const user=fbUser(); if(!user||!requireOwner(user))throw new Error("Cuenta no autorizada."); const uidVal=user.uid; await metaRef(uidVal).set({lastPingAt:isoNow(),app:"oasis_crm_pro_v4_4"},{merge:true}); const ops=[]; state.db.clients.filter(c=>!isDeleted("clients",c.id)).forEach(c=>ops.push({ref:clientCol(uidVal).doc(c.id),doc:c})); state.db.visits.filter(v=>!isDeleted("visits",v.id)&&!isDeleted("clients",v.clientId)).forEach(v=>ops.push({ref:visitCol(uidVal).doc(v.id),doc:v})); for(let i=0;i<ops.length;i+=450){const batch=fbDB.batch(); ops.slice(i,i+450).forEach(item=>batch.set(item.ref,item.doc,{merge:true})); await batch.commit();}}
+async function pullFirebaseToLocal(){const user=fbUser(); if(!user||!requireOwner(user))throw new Error("Cuenta no autorizada."); const uidVal=user.uid; await pullVisitCatalogFromFirebase(uidVal); const [cs,vs]=await Promise.all([clientCol(uidVal).get(),visitCol(uidVal).get()]); const remote=normalizeDB({clients:cs.docs.map(d=>d.data()).filter(Boolean).filter(d=>!isDeleted("clients",d.id)),visits:vs.docs.map(d=>d.data()).filter(Boolean).filter(d=>!isDeleted("visits",d.id)&&!isDeleted("clients",d.clientId))}); const localClients=new Map(state.db.clients.filter(c=>!isDeleted("clients",c.id)).map(c=>[c.id,c])); const localVisits=new Map(state.db.visits.filter(v=>!isDeleted("visits",v.id)&&!isDeleted("clients",v.clientId)).map(v=>[v.id,v])); remote.clients.forEach(r=>{const l=localClients.get(r.id); if(!l||String(r.updatedAt||r.createdAt)>String(l.updatedAt||l.createdAt))localClients.set(r.id,r);}); remote.visits.forEach(r=>{const l=localVisits.get(r.id); if(!l||String(r.updatedAt||r.createdAt)>String(l.updatedAt||l.createdAt))localVisits.set(r.id,r);}); state.db=normalizeDB({clients:[...localClients.values()],visits:[...localVisits.values()]}); await idbClearAll(); await persistState();}
+async function pushLocalToFirebase(){const user=fbUser(); if(!user||!requireOwner(user))throw new Error("Cuenta no autorizada."); const uidVal=user.uid; await metaRef(uidVal).set({lastPingAt:isoNow(),app:"oasis_crm_pro_v4_5",visitCatalog:normalizeVisitCatalog(state.visitCatalog||defaultVisitCatalog())},{merge:true}); const ops=[]; state.db.clients.filter(c=>!isDeleted("clients",c.id)).forEach(c=>ops.push({ref:clientCol(uidVal).doc(c.id),doc:c})); state.db.visits.filter(v=>!isDeleted("visits",v.id)&&!isDeleted("clients",v.clientId)).forEach(v=>ops.push({ref:visitCol(uidVal).doc(v.id),doc:v})); for(let i=0;i<ops.length;i+=450){const batch=fbDB.batch(); ops.slice(i,i+450).forEach(item=>batch.set(item.ref,item.doc,{merge:true})); await batch.commit();}}
 async function safeSyncNow(reason="manual"){if(!canAutoSync())return; if(_syncRunning){_syncPending=true;return;} _syncRunning=true;_syncPending=false; try{fbStatus(`sync ${reason}...`); await deleteRemoteTombstones(); await pullFirebaseToLocal(); await pushLocalToFirebase(); refreshAll(); const user=fbUser(); fbStatus(user?`online (${user.email})`:"offline");}catch(e){console.error(e);const user=fbUser();fbStatus(user?`online (${user.email})`:"offline");}finally{_syncRunning=false;if(_syncPending)setTimeout(()=>safeSyncNow("pending"),400);}}
 function startAutoSyncLoop(){stopAutoSyncLoop(); if(AUTO_SYNC_ENABLED)_syncTimer=setInterval(()=>safeSyncNow("interval"),AUTO_SYNC_INTERVAL_MS);} function stopAutoSyncLoop(){if(_syncTimer)clearInterval(_syncTimer);_syncTimer=null;} function scheduleDebouncedSync(reason="local-change"){if(!canAutoSync())return;clearTimeout(_syncDebounce);_syncDebounce=setTimeout(()=>safeSyncNow(reason),AUTO_SYNC_DEBOUNCE_MS);} async function fbLogin(){if(!fbReady())return alert("Firebase no está listo.");const provider=new firebase.auth.GoogleAuthProvider();if(isIOS())return fbAuth.signInWithRedirect(provider);const res=await fbAuth.signInWithPopup(provider);if(!requireOwner(res.user)){await fbAuth.signOut();throw new Error("Cuenta no autorizada.");}} async function fbHandleRedirectResult(){if(!fbReady())return;try{const res=await fbAuth.getRedirectResult();if(res?.user&&!requireOwner(res.user)){await fbAuth.signOut();throw new Error("Cuenta no autorizada.");}}catch(e){const msg=String(e?.message||"").toLowerCase();if(msg&&!msg.includes("redirect")&&!msg.includes("no redirect"))alert("Login redirect falló: "+(e?.message||e));}} async function fbLogout(){if(fbReady())await fbAuth.signOut();} async function exitCRM(){try{clearSessionUnlock();if(fbReady()&&fbUser())await fbAuth.signOut();}catch(e){console.error(e);}finally{window.location.href=HUB_URL;}}
 
-function bindUI(){document.querySelectorAll(".navBtn").forEach(btn=>btn.addEventListener("click",()=>setView(btn.dataset.view)));$("globalSearch")?.addEventListener("input",refreshAll);$("clientSearch")?.addEventListener("input",renderClients);$("clientStatusFilter")?.addEventListener("change",renderClients);$("clientSort")?.addEventListener("change",renderClients);$("followupFilter")?.addEventListener("change",renderFollowups);$("visitSearch")?.addEventListener("input",renderVisits);$("timelineSearch")?.addEventListener("input",()=>{state.timelineLimit=100;renderTimeline();});$("timelineFrom")?.addEventListener("change",()=>{state.timelineLimit=100;renderTimeline();});$("timelineTo")?.addEventListener("change",()=>{state.timelineLimit=100;renderTimeline();});$("btnClearTimelineFilters")?.addEventListener("click",()=>{$("timelineSearch").value="";$("timelineFrom").value="";$("timelineTo").value="";state.timelineLimit=100;renderTimeline();});$("btnMoreTimeline")?.addEventListener("click",()=>{state.timelineLimit+=100;renderTimeline();});$("btnNewClient")?.addEventListener("click",openClientModal);$("btnCloseModal")?.addEventListener("click",closeClientModal);$("btnCreateClient")?.addEventListener("click",createClient);$("btnOpenQuickVisit")?.addEventListener("click",()=>openVisitModal(null));$("btnAddVisit")?.addEventListener("click",()=>openVisitModal(null,state.activeClientId));$("btnCloseVisitModal")?.addEventListener("click",closeVisitModal);$("btnSaveVisit")?.addEventListener("click",saveVisit);$("btnCloseProfile")?.addEventListener("click",closeProfile);$("btnSaveClient")?.addEventListener("click",saveClientEdits);$("btnDeleteClient")?.addEventListener("click",()=>deleteClient(state.activeClientId));$("btnExportBackup")?.addEventListener("click",exportJSONBackup);$("btnRestoreBackup")?.addEventListener("click",()=>$("restoreBackupFile").click());$("restoreBackupFile")?.addEventListener("change",e=>{if(e.target.files?.[0])restoreBackup(e.target.files[0]);e.target.value="";});$("btnMigrateLegacy")?.addEventListener("click",async()=>{const ok=await importLegacyIfNeeded(true);alert(ok?"Legacy migrado ✅":"No encontré data legacy.");refreshAll();});$("btnResetAll")?.addEventListener("click",resetAll);$("btnChangePin")?.addEventListener("click",()=>showLock("change"));$("btnExitCRM")?.addEventListener("click",exitCRM);$("btnLogin")?.addEventListener("click",()=>fbLogin().catch(e=>alert(e.message||e)));$("btnLogout")?.addEventListener("click",fbLogout);$("btnSyncNow")?.addEventListener("click",()=>safeSyncNow("manual"));$("btnExportTimeline")?.addEventListener("click",()=>exportCSV("timeline_oasis", [["Fecha","Cliente","Servicio","Tipo","Equipo","Próxima","Pago","Monto","Nota"],...timelineRows().map(({visit,client})=>[visit.date,client.name,visit.service,visit.type,[visit.equipment,visit.model].filter(Boolean).join(" "),visit.nextDate,visit.paymentStatus,visit.amount,visit.note])]));$("btnExportFollowups")?.addEventListener("click",()=>exportCSV("seguimientos_oasis", [["Prioridad","Cliente","Contacto","Última","Motivo","Acción"],...getFollowups().map(f=>[f.priority,f.client.name,f.client.contact,f.lastDate,f.reason,f.action])]));}
-function initFirebase(){if(!window.firebase)return fbStatus("offline"); try{fbApp=firebase.apps?.length?firebase.app():firebase.initializeApp(firebaseConfig);fbAuth=firebase.auth();fbDB=firebase.firestore();fbAuth.onAuthStateChanged(async user=>{if(user&&requireOwner(user)){fbStatus(`online (${user.email})`);startAutoSyncLoop();await safeSyncNow("login");}else{if(user&&!requireOwner(user)){alert("Cuenta no autorizada.");await fbAuth.signOut();}stopAutoSyncLoop();fbStatus("offline");}});fbHandleRedirectResult();}catch(e){console.error(e);fbStatus("offline");}}
-async function init(){bindPin();bindUI();await loadStateFromIndexedDB();await importLegacyIfNeeded(false);state.indexes=buildIndexes(state.db);updatePinStatus();initFirebase();refreshAll(); if(!getStoredPin())showLock("create"); else if(!hasSessionUnlock())showLock("unlock");}
+function bindUI(){document.querySelectorAll(".navBtn").forEach(btn=>btn.addEventListener("click",()=>setView(btn.dataset.view)));$("globalSearch")?.addEventListener("input",refreshAll);$("clientSearch")?.addEventListener("input",renderClients);$("clientStatusFilter")?.addEventListener("change",renderClients);$("clientSort")?.addEventListener("change",renderClients);$("followupFilter")?.addEventListener("change",renderFollowups);$("visitSearch")?.addEventListener("input",renderVisits);$("timelineSearch")?.addEventListener("input",()=>{state.timelineLimit=100;renderTimeline();});$("timelineFrom")?.addEventListener("change",()=>{state.timelineLimit=100;renderTimeline();});$("timelineTo")?.addEventListener("change",()=>{state.timelineLimit=100;renderTimeline();});$("btnClearTimelineFilters")?.addEventListener("click",()=>{$("timelineSearch").value="";$("timelineFrom").value="";$("timelineTo").value="";state.timelineLimit=100;renderTimeline();});$("btnMoreTimeline")?.addEventListener("click",()=>{state.timelineLimit+=100;renderTimeline();});$("btnNewClient")?.addEventListener("click",openClientModal);$("btnCloseModal")?.addEventListener("click",closeClientModal);$("btnCreateClient")?.addEventListener("click",createClient);$("btnOpenQuickVisit")?.addEventListener("click",()=>openVisitModal(null));$("btnAddVisit")?.addEventListener("click",()=>openVisitModal(null,state.activeClientId));$("btnCloseVisitModal")?.addEventListener("click",closeVisitModal);$("btnSaveVisit")?.addEventListener("click",saveVisit);$("btnCloseProfile")?.addEventListener("click",closeProfile);$("btnSaveClient")?.addEventListener("click",saveClientEdits);$("btnDeleteClient")?.addEventListener("click",()=>deleteClient(state.activeClientId));$("btnExportBackup")?.addEventListener("click",exportJSONBackup);$("btnRestoreBackup")?.addEventListener("click",()=>$("restoreBackupFile").click());$("restoreBackupFile")?.addEventListener("change",e=>{if(e.target.files?.[0])restoreBackup(e.target.files[0]);e.target.value="";});$("btnMigrateLegacy")?.addEventListener("click",async()=>{const ok=await importLegacyIfNeeded(true);alert(ok?"Legacy migrado ✅":"No encontré data legacy.");refreshAll();});$("btnResetAll")?.addEventListener("click",resetAll);$("btnSaveVisitCatalog")?.addEventListener("click",saveVisitCatalogFromSettings);$("btnChangePin")?.addEventListener("click",()=>showLock("change"));$("btnExitCRM")?.addEventListener("click",exitCRM);$("btnLogin")?.addEventListener("click",()=>fbLogin().catch(e=>alert(e.message||e)));$("btnLogout")?.addEventListener("click",fbLogout);$("btnSyncNow")?.addEventListener("click",()=>safeSyncNow("manual"));$("btnExportTimeline")?.addEventListener("click",()=>exportCSV("timeline_oasis", [["Fecha","Cliente","Servicio","Tipo","Equipo","Próxima","Pago","Monto","Nota"],...timelineRows().map(({visit,client})=>[visit.date,client.name,visit.service,visit.type,[visit.equipment,visit.model].filter(Boolean).join(" "),visit.nextDate,visit.paymentStatus,visit.amount,visit.note])]));$("btnExportFollowups")?.addEventListener("click",()=>exportCSV("seguimientos_oasis", [["Prioridad","Cliente","Contacto","Última","Motivo","Acción"],...getFollowups().map(f=>[f.priority,f.client.name,f.client.contact,f.lastDate,f.reason,f.action])]));}
+function initFirebase(){if(!window.firebase)return fbStatus("offline"); try{fbApp=firebase.apps?.length?firebase.app():firebase.initializeApp(firebaseConfig);fbAuth=firebase.auth();fbDB=firebase.firestore();fbAuth.onAuthStateChanged(async user=>{if(user&&requireOwner(user)){fbStatus(`online (${user.email})`);startAutoSyncLoop();await pullVisitCatalogFromFirebase(user.uid);await safeSyncNow("login");}else{if(user&&!requireOwner(user)){alert("Cuenta no autorizada.");await fbAuth.signOut();}stopAutoSyncLoop();fbStatus("offline");}});fbHandleRedirectResult();}catch(e){console.error(e);fbStatus("offline");}}
+async function init(){loadVisitCatalog();bindPin();bindUI();populateVisitDropdowns();renderVisitCatalogSettings();await loadStateFromIndexedDB();await importLegacyIfNeeded(false);state.indexes=buildIndexes(state.db);updatePinStatus();initFirebase();refreshAll(); if(!getStoredPin())showLock("create"); else if(!hasSessionUnlock())showLock("unlock");}
 init().catch(e=>{console.error(e);alert("Error cargando CRM: "+(e.message||e));});
